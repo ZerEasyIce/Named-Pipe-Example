@@ -6,7 +6,7 @@ Imports Newtonsoft.Json
 
 Namespace Named_Pipe_Example
 
-    Public Class NamedPipeHelper
+    Public Class clsNamedPipe
         Implements IDisposable
 
         Private _pipeName As String

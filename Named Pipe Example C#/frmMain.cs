@@ -14,20 +14,119 @@ namespace Named_Pipe_Example
         private System.Windows.Forms.Timer DoProcess;
         private string chkType = QType.qInbound;
 
+        private int iStatus = 1;
+        private int iStep = 0;
+        private int ReceivediStatus;
+        private int ReceivediStep;
+        private bool _isSending = false;
+
         public frmMain()
         {
             InitializeComponent();
             this.Text = modGlobal.confDevTitleName;
         }
 
-        private int iStatus = 1;
-        private int iStep = 0;
-        private int ReceivediStatus;
-        private int ReceivediStep;
+        private async void Form1_Load(object sender, EventArgs e)
+        {
+            InitializeNamedPipe();
 
-        private bool _isSending = false;
+            DoProcess = new System.Windows.Forms.Timer();
+            DoProcess.Interval = modGlobal.confTimerProcess;
+            DoProcess.Tick += DoProcess_Tick;
+            DoProcess.Start();
 
-        private async void TimerNamedPipe_Tick(object sender, EventArgs e)
+            lblCurrentStatus_Value.Text = iStatus.ToString();
+            lblCurrentStep_Value.Text = iStep.ToString();
+        }
+
+        private void InitializeNamedPipe()
+        {
+            if (modGlobal.confDevDualMain == 1)
+                pipeHelper = new clsNamedPipe(modGlobal.confDevPipeName, isServer: true);
+            else
+                pipeHelper = new clsNamedPipe(modGlobal.confDevPipeName, isServer: false);
+
+            pipeHelper.OnDataReceived += (data) =>
+            {
+                // อัพเดต UI ต้อง invoke เพราะมาจาก thread อื่น
+                if (InvokeRequired)
+                {
+                    Invoke(new Action(() =>
+                    {
+                        // อัพเดต UI
+                        ReceivediStatus = data.pStatus;
+                        ReceivediStep = data.pStep;
+
+                        lblPipeStatus_Value.Text = data.pStatus.ToString();
+                        lblPipeStep_Value.Text = data.pStep.ToString();
+                    }));
+                }
+                else
+                {
+                    ReceivediStatus = data.pStatus;
+                    ReceivediStep = data.pStep;
+
+                    lblPipeStatus_Value.Text = data.pStatus.ToString();
+                    lblPipeStep_Value.Text = data.pStep.ToString();
+                }
+            };
+
+            _ = pipeHelper.StartAsync();
+
+            timerProcess = new System.Windows.Forms.Timer();
+            timerProcess.Interval = modGlobal.confTimerProcess;
+            timerProcess.Tick += async (sender, e) =>
+            {
+                try
+                {
+                    if (pipeHelper == null || _isSending) return;
+
+                    // อัพเดตสถานะการเชื่อมต่อบน UI
+                    if (InvokeRequired)
+                    {
+                        Invoke(new Action(() =>
+                        {
+                            tsslPipeStatus_Value.Text = pipeHelper.IsConnected ? "Connected" : "Not Connected";
+                        }));
+                    }
+                    else
+                    {
+                        tsslPipeStatus_Value.Text = pipeHelper.IsConnected ? "Connected" : "Not Connected";
+                    }
+
+                    if (modGlobal.confDevDualMain == 1 && pipeHelper.IsConnected)
+                    {
+                        var data = new PipeData { pStatus = iStatus, pStep = iStep };
+
+                        try
+                        {
+                            _isSending = true;
+                            bool sent = await pipeHelper.SendAsync(data);
+                            if (!sent)
+                            {
+                                Debug.WriteLine("Data not sent: pipe busy or disconnected.");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Debug.WriteLine($"SendAsync error: {ex.Message}");
+                        }
+                        finally
+                        {
+                            _isSending = false;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"TimerNamedPipe_Tick error: {ex.Message}");
+                }
+            };
+
+            timerProcess.Start();
+        }
+
+        /*private async void TimerNamedPipe_Tick(object sender, EventArgs e)
         {
             try
             {
@@ -62,38 +161,26 @@ namespace Named_Pipe_Example
             {
                 Debug.WriteLine($"TimerNamedPipe_Tick error: {ex.Message}");
             }
-        }
+        }*/
 
-        private async void Form1_Load(object sender, EventArgs e)
+        /*private void PipeHelper_OnDataReceived(PipeData data)
         {
-            if (modGlobal.confDevDualMain == 1)
-                pipeHelper = new clsNamedPipe(modGlobal.confDevPipeName, isServer: true);
-            else
-                pipeHelper = new clsNamedPipe(modGlobal.confDevPipeName, isServer: false);
+            // ตัวอย่าง: อัพเดต UI ต้อง invoke เพราะมาจาก thread อื่น
+            if (InvokeRequired)
+            {
+                Invoke(new Action(() => PipeHelper_OnDataReceived(data)));
+                return;
+            }
 
-            pipeHelper.OnDataReceived += PipeHelper_OnDataReceived;
+            if (pipeHelper.IsConnected)
+            {
+                ReceivediStatus = data.pStatus;
+                ReceivediStep = data.pStep;
 
-            _ = pipeHelper.StartAsync();
-
-            timerProcess = new System.Windows.Forms.Timer();
-            timerProcess.Interval = modGlobal.confTimerProcess;
-            timerProcess.Tick += TimerNamedPipe_Tick;
-            timerProcess.Start();
-
-            DoProcess = new System.Windows.Forms.Timer();
-            DoProcess.Interval = modGlobal.confTimerProcess;
-            DoProcess.Tick += DoProcess_Tick;
-            DoProcess.Start();
-
-            lblCurrentStatus_Value.Text = iStatus.ToString();
-            lblCurrentStep_Value.Text = iStep.ToString();
-        }
-
-        private async void SetCase(int step)
-        {
-            iStep = step;
-            lblCurrentStep_Value.Text = iStep.ToString();
-        }
+                lblPipeStatus_Value.Text = data.pStatus.ToString();
+                lblPipeStep_Value.Text = data.pStep.ToString();
+            }
+        }*/
 
         private void btnStart_Click(object sender, EventArgs e)
         {
@@ -187,23 +274,10 @@ namespace Named_Pipe_Example
             }
         }
 
-        private void PipeHelper_OnDataReceived(PipeData data)
+        private async void SetCase(int step)
         {
-            // ตัวอย่าง: อัพเดต UI ต้อง invoke เพราะมาจาก thread อื่น
-            if (InvokeRequired)
-            {
-                Invoke(new Action(() => PipeHelper_OnDataReceived(data)));
-                return;
-            }
-
-            if (pipeHelper.IsConnected)
-            {
-                ReceivediStatus = data.pStatus;
-                ReceivediStep = data.pStep;
-
-                lblPipeStatus_Value.Text = data.pStatus.ToString();
-                lblPipeStep_Value.Text = data.pStep.ToString();
-            }
+            iStep = step;
+            lblCurrentStep_Value.Text = iStep.ToString();
         }
 
         private void Form1_FormClosing(object sender, FormClosingEventArgs e)

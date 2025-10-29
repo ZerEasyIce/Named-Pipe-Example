@@ -2,10 +2,16 @@
 
 Public Class frmMain
 
-    Private pipeHelper As NamedPipeHelper
+    Private pipeHelper As clsNamedPipe
     Private timerProcess As System.Windows.Forms.Timer
     Private DoProcess As System.Windows.Forms.Timer
     Private chkType As String = QType.qInbound
+
+    Private iStatus As Integer = 1
+    Private iStep As Integer = 0
+    Private ReceivediStatus As Integer
+    Private ReceivediStep As Integer
+    Private _isSending As Boolean = False
 
     'Constructor
     Public Sub New()
@@ -15,20 +21,8 @@ Public Class frmMain
     End Sub
 
     Private Sub frmMain_Load(sender As Object, e As EventArgs) Handles MyBase.Load
-        If modGlobal.confDevDualMain = 1 Then
-            pipeHelper = New NamedPipeHelper(modGlobal.confDevPipeName, isServer:=True)
-        Else
-            pipeHelper = New NamedPipeHelper(modGlobal.confDevPipeName, isServer:=False)
-        End If
 
-        AddHandler pipeHelper.OnDataReceived, AddressOf PipeHelper_OnDataReceived
-
-        Dim startTask As Task = pipeHelper.StartAsync()
-
-        timerProcess = New System.Windows.Forms.Timer()
-        timerProcess.Interval = modGlobal.confTimerProcess
-        AddHandler timerProcess.Tick, AddressOf TimerNamedPipe_Tick
-        timerProcess.Start()
+        InitializeNamedPipe()
 
         DoProcess = New System.Windows.Forms.Timer()
         DoProcess.Interval = modGlobal.confTimerProcess
@@ -37,58 +31,126 @@ Public Class frmMain
 
         lblCurrentStatus_Value.Text = iStatus.ToString()
         lblCurrentStep_Value.Text = iStep.ToString()
+
     End Sub
 
-    Private iStatus As Integer = 1
-    Private iStep As Integer = 0
-    Private ReceivediStatus As Integer
-    Private ReceivediStep As Integer
-
-    Private _isSending As Boolean = False
-
-    Private Sub PipeHelper_OnDataReceived(data As PipeData)
-        ' อัพเดต UI ต้อง Invoke เพราะมาจาก thread อื่น
-        If Me.InvokeRequired Then
-            Me.Invoke(New Action(Sub() PipeHelper_OnDataReceived(data)))
-            Return
+    Private Sub InitializeNamedPipe()
+        If modGlobal.confDevDualMain = 1 Then
+            pipeHelper = New clsNamedPipe(modGlobal.confDevPipeName, isServer:=True)
+        Else
+            pipeHelper = New clsNamedPipe(modGlobal.confDevPipeName, isServer:=False)
         End If
 
-        If pipeHelper IsNot Nothing AndAlso pipeHelper.IsConnected Then
-            ReceivediStatus = data.pStatus
-            ReceivediStep = data.pStep
+        AddHandler pipeHelper.OnDataReceived, Sub(data)
+                                                  ' อัพเดต UI ต้อง invoke เพราะมาจาก thread อื่น
+                                                  If InvokeRequired Then
+                                                      Invoke(New Action(Sub()
+                                                                            ReceivediStatus = data.pStatus
+                                                                            ReceivediStep = data.pStep
 
-            lblPipeStatus_Value.Text = data.pStatus.ToString()
-            lblPipeStep_Value.Text = data.pStep.ToString()
-        End If
+                                                                            lblPipeStatus_Value.Text = data.pStatus.ToString()
+                                                                            lblPipeStep_Value.Text = data.pStep.ToString()
+                                                                        End Sub))
+                                                  Else
+                                                      ReceivediStatus = data.pStatus
+                                                      ReceivediStep = data.pStep
+
+                                                      lblPipeStatus_Value.Text = data.pStatus.ToString()
+                                                      lblPipeStep_Value.Text = data.pStep.ToString()
+                                                  End If
+                                              End Sub
+
+        ' เรียก StartAsync แบบไม่ต้องรอผล (fire and forget)
+        Dim startTask As Task = pipeHelper.StartAsync()
+
+        timerProcess = New System.Windows.Forms.Timer()
+        timerProcess.Interval = modGlobal.confTimerProcess
+
+        AddHandler timerProcess.Tick, Async Sub(sender As Object, e As EventArgs)
+                                          Try
+                                              If pipeHelper Is Nothing OrElse _isSending Then Return
+
+                                              ' อัพเดตสถานะการเชื่อมต่อบน UI
+                                              If InvokeRequired Then
+                                                  Invoke(New Action(Sub()
+                                                                        tsslPipeStatus_Value.Text = If(pipeHelper.IsConnected, "Connected", "Not Connected")
+                                                                    End Sub))
+                                              Else
+                                                  tsslPipeStatus_Value.Text = If(pipeHelper.IsConnected, "Connected", "Not Connected")
+                                              End If
+
+                                              If modGlobal.confDevDualMain = 1 AndAlso pipeHelper.IsConnected Then
+                                                  Dim data As New PipeData With {.pStatus = iStatus, .pStep = iStep}
+
+                                                  Try
+                                                      _isSending = True
+                                                      Dim sent As Boolean = Await pipeHelper.SendAsync(data)
+                                                      If Not sent Then
+                                                          Debug.WriteLine("Data not sent: pipe busy or disconnected.")
+                                                      End If
+                                                  Catch ex As Exception
+                                                      Debug.WriteLine($"SendAsync error: {ex.Message}")
+                                                  Finally
+                                                      _isSending = False
+                                                  End Try
+                                              End If
+                                          Catch ex As Exception
+                                              Debug.WriteLine($"TimerNamedPipe_Tick error: {ex.Message}")
+                                          End Try
+                                      End Sub
+        timerProcess.Start()
     End Sub
 
-    Private Async Sub TimerNamedPipe_Tick(sender As Object, e As EventArgs)
-        Try
-            tsslPipeStatus_Value.Text = If(pipeHelper IsNot Nothing AndAlso pipeHelper.IsConnected, "Connected", "Not Connected")
+    'Private Sub PipeHelper_OnDataReceived(data As PipeData)
+    '    ' อัพเดต UI ต้อง Invoke เพราะมาจาก thread อื่น
+    '    If Me.InvokeRequired Then
+    '        Me.Invoke(New Action(Sub() PipeHelper_OnDataReceived(data)))
+    '        Return
+    '    End If
 
-            If pipeHelper Is Nothing OrElse _isSending Then Return
+    '    If pipeHelper IsNot Nothing AndAlso pipeHelper.IsConnected Then
+    '        ReceivediStatus = data.pStatus
+    '        ReceivediStep = data.pStep
 
-            If modGlobal.confDevDualMain = 1 Then
-                Dim data As New PipeData With {
-                .pStatus = iStatus,
-                .pStep = iStep
-            }
+    '        lblPipeStatus_Value.Text = data.pStatus.ToString()
+    '        lblPipeStep_Value.Text = data.pStep.ToString()
+    '    End If
+    'End Sub
 
-                Try
-                    _isSending = True
-                    Dim sent As Boolean = Await pipeHelper.SendAsync(data)
-                    If Not sent Then
-                        Debug.WriteLine("Data not sent: pipe busy or disconnected.")
-                    End If
-                Catch ex As Exception
-                    Debug.WriteLine($"SendAsync error: {ex.Message}")
-                Finally
-                    _isSending = False
-                End Try
-            End If
-        Catch ex As Exception
-            Debug.WriteLine($"TimerNamedPipe_Tick error: {ex.Message}")
-        End Try
+    'Private Async Sub TimerNamedPipe_Tick(sender As Object, e As EventArgs)
+    '    Try
+    '        tsslPipeStatus_Value.Text = If(pipeHelper IsNot Nothing AndAlso pipeHelper.IsConnected, "Connected", "Not Connected")
+
+    '        If pipeHelper Is Nothing OrElse _isSending Then Return
+
+    '        If modGlobal.confDevDualMain = 1 Then
+    '            Dim data As New PipeData With {
+    '            .pStatus = iStatus,
+    '            .pStep = iStep
+    '        }
+
+    '            Try
+    '                _isSending = True
+    '                Dim sent As Boolean = Await pipeHelper.SendAsync(data)
+    '                If Not sent Then
+    '                    Debug.WriteLine("Data not sent: pipe busy or disconnected.")
+    '                End If
+    '            Catch ex As Exception
+    '                Debug.WriteLine($"SendAsync error: {ex.Message}")
+    '            Finally
+    '                _isSending = False
+    '            End Try
+    '        End If
+    '    Catch ex As Exception
+    '        Debug.WriteLine($"TimerNamedPipe_Tick error: {ex.Message}")
+    '    End Try
+    'End Sub
+
+    Private Sub btnStart_Click(sender As Object, e As EventArgs) Handles btnStart.Click
+        iStatus = 98
+        iStep = 1
+        lblCurrentStatus_Value.Text = iStatus.ToString()
+        lblCurrentStep_Value.Text = iStep.ToString()
     End Sub
 
     Private Async Sub DoProcess_Tick(sender As Object, e As EventArgs)
@@ -149,13 +211,6 @@ Public Class frmMain
         Catch ex As Exception
             Debug.WriteLine($"DoProcess_Tick error: {ex.Message}")
         End Try
-    End Sub
-
-    Private Sub btnStart_Click(sender As Object, e As EventArgs) Handles btnStart.Click
-        iStatus = 98
-        iStep = 1
-        lblCurrentStatus_Value.Text = iStatus.ToString()
-        lblCurrentStep_Value.Text = iStep.ToString()
     End Sub
 
     Private Sub SetCase([step] As Integer)
